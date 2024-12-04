@@ -17,29 +17,103 @@ use function Dagger\dag;
 #[Doc('A generated module for DragoonisSylius functions')]
 class DragoonisSylius
 {
-    #[DaggerFunction]
-    #[Doc('Returns a container that echoes whatever string argument is provided')]
-    public function containerEcho(string $stringArg): Container
+
+    public function version(Directory $dir): Container
     {
         return dag()
             ->container()
-            ->from('alpine:latest')
-            ->withExec(['echo', $stringArg]);
+            // FROM ghcr.io/sylius/sylius-php:8.2-fixuid-xdebug-alpine
+            ->from('ghcr.io/sylius/sylius-php:8.2-fixuid-xdebug-alpine')
+            // RUN php -v
+            ->withExec(['php', '-v']);
     }
 
+
     #[DaggerFunction]
-    #[Doc('version')]
-    public function version(): Container
+    #[Doc('static')]
+    public function phpspec(Directory $dir): Container
     {
         return dag()
             ->container()
             ->from('ghcr.io/sylius/sylius-php:8.2-fixuid-xdebug-alpine')
-            ->withExec(['php', '-v']);
+            // COPY --chown=sylius:sylius . /srv/sylius
+            ->withMountedDirectory('/srv/sylius', $dir, 'sylius:sylius')
+            ->withExec(['vendor/bin/phpspec'])
+            ->withExec(['vendor/bin/phpstan']);
+    }
+
+    #[DaggerFunction]
+    #[Doc('phpstan')]
+    public function phpstan(Directory $dir): Container
+    {
+        return dag()
+            ->container()
+            ->from('ghcr.io/sylius/sylius-php:8.2-fixuid-xdebug-alpine')
+            ->withMountedDirectory('/srv/sylius', $dir, 'sylius:sylius')
+            ->withExec(['vendor/bin/phpstan']);
     }
 
     #[DaggerFunction]
     #[Doc('static')]
-    public function base(
+    public function static(Directory $dir): Container
+    {
+        return dag()
+            ->container()
+            ->from('ghcr.io/sylius/sylius-php:8.2-fixuid-xdebug-alpine')
+            ->withMountedDirectory('/srv/sylius', $dir, 'sylius:sylius')
+            ->withExec(['vendor/bin/phpspec'])
+            ->withExec(['vendor/bin/phpstan']);
+
+    }
+
+    #[DaggerFunction]
+    #[Doc('static')]
+    public function phpspecOut(Directory $dir): string
+    {
+        return dag()
+            ->container()
+            ->from('ghcr.io/sylius/sylius-php:8.2-fixuid-xdebug-alpine')
+            // COPY --chown=sylius:sylius . /srv/sylius
+            ->withMountedDirectory('/srv/sylius', $dir, 'sylius:sylius')
+            ->withExec(['vendor/bin/phpspec'])
+            ->withExec(['vendor/bin/phpstan'])
+            ->stdout();
+    }
+
+    #[DaggerFunction]
+    // @todo - create a base --with-exec=vendor/bin/phpstan demo.
+    public function base(Directory $dir): Container
+    {
+        return dag()
+            ->container()
+            ->from('ghcr.io/sylius/sylius-php:8.2-fixuid-xdebug-alpine')
+            ->withMountedDirectory('/srv/sylius', $dir, 'sylius:sylius');
+    }
+
+    
+
+    #[DaggerFunction]
+    #[Doc('phpspec-with-base')]
+    public function phpspecWithBase(Directory $dir): Container
+    {
+        return $this->base($dir)->withExec(['vendor/bin/phpspec']);
+    }
+
+    #[DaggerFunction]
+    #[Doc('phpunit-with-env')]
+    public function phpunitWithEnv(Directory $dir): Container
+    {
+        return $this->base($dir)
+            ->withEnvVariable('APP_ENV', 'test_cached')
+            ->withEnvVariable('PHP_DATE_TIMEZONE', 'Europe/Warsaw')
+            ->withEnvVariable('APP_DEBUG', '0')
+            ->withExec(['vendor/bin/phpunit']);
+    }
+
+
+    #[DaggerFunction]
+    #[Doc('integration-base')]
+    public function integrationBase(
         #[Doc('The directory to mount')]
         Directory $dir,
     ): Container
@@ -48,7 +122,12 @@ class DragoonisSylius
             ->container()
             ->from('ghcr.io/sylius/sylius-php:8.2-fixuid-xdebug-alpine')
             ->withMountedDirectory('/srv/sylius', $dir, 'sylius:sylius')
-            
+
+            ->withUser('root')
+            ->withExec(['mv', '.docker/test/php.ini', '/usr/local/etc/php/php-cli.ini'])
+            ->withExec(['apk', '--update', 'add', 'make', 'nodejs', 'npm', 'yarn'])
+            ->withUser('sylius')
+
             ->withEnvVariable('APP_ENV', 'test_cached')
             ->withEnvVariable('PHP_DATE_TIMEZONE', 'Europe/Warsaw')
             ->withEnvVariable('APP_DEBUG', '0')
@@ -56,47 +135,100 @@ class DragoonisSylius
             ->withEnvVariable('SYLIUS_MESSENGER_TRANSPORT_MAIN_DSN', 'sync://')
             ->withEnvVariable('SYLIUS_MESSENGER_TRANSPORT_MAIN_FAILED_DSN', 'sync://')
             ->withEnvVariable('SYLIUS_MESSENGER_TRANSPORT_CATALOG_PROMOTION_REMOVAL_DSN', 'sync://')
-            ->withEnvVariable('SYLIUS_MESSENGER_TRANSPORT_CATALOG_PROMOTION_REMOVAL_FAILED_DSN', 'sync://')
-            
-            ->withUser('root')
-            ->withExec(['mv', '.docker/test/php.ini', '/usr/local/etc/php/php-cli.ini'])
-            ->withExec(['apk', '--update', 'add', 'make'])
-            ->withUser('sylius');
+            ->withEnvVariable('SYLIUS_MESSENGER_TRANSPORT_CATALOG_PROMOTION_REMOVAL_FAILED_DSN', 'sync://');
+    }
+
+
+
+    #[DaggerFunction]
+    #[Doc('behat-cli')]
+    public function behatCli(
+        #[Doc('The directory to mount')]
+        Directory $dir,
+    ): Container
+    {
+        return $this->integrationBase($dir)
+            ->withServiceBinding('mysql', $this->mysql())
+            ->withExec(['make', 'init'])
+            ->withExec(['make', 'behat-cli']);
     }
 
     #[DaggerFunction]
-    #[Doc('static')]
-    public function static(
+    #[Doc('behat-non-js')]
+    public function behatNonJs(
         #[Doc('The directory to mount')]
         Directory $dir,
     ): Container
     {
         return $this->base($dir)
-            ->withExec(['make', 'static']);
+            ->withServiceBinding('mysql', $this->mysql())
+            ->withExec(['make', 'init'])
+            ->withExec(['make', 'behat-non-js']);
     }
 
     #[DaggerFunction]
-    #[Doc('phpunit-integration')]
-    public function phpunitIntegration(
+    #[Doc('behat-js')]
+    public function behatJs(
         #[Doc('The directory to mount')]
         Directory $dir,
     ): Container
     {
-        return $this->base($dir)
-            ->withServiceBinding('mysql', $this->db())
-            ->withUser('root')
-            ->withExec(['apk', '--update', 'add', 'nodejs', 'npm', 'yarn'])
-            ->withUser('sylius')
-            ->withExec(['make', 'phpunit-integration']);
+        return $this->integrationBase($dir)
+            ->withServiceBinding('mysql', $this->mysql('5.6'))
+            ->withExec(['make', 'init'])
+            ->withExec(['make', 'behat-js']);
     }
 
-    private function db(): Service
+    #[DaggerFunction]
+    #[Doc('behat-js-postgres')]
+    public function behatJsPostgres(
+        #[Doc('The directory to mount')]
+        Directory $dir,
+    ): Container
+    {
+        $container = $this->integrationBase($dir);
+        $container = $this->setUpPostgres($container);
+
+        return $container
+            ->withServiceBinding('mysql', $this->postgres('5.6')) // @todo - add version
+            ->withExec(['make', 'init'])
+            ->withExec(['make', 'behat-js']);
+    }
+    
+
+    private function mysql(string $version = '5.7'): Service
     {
         return dag()->container()
-            ->from('mysql:5.7')
+            ->from("mysql:$version")
             ->withEnvVariable('MYSQL_ROOT_PASSWORD', 'mysql')
             ->withExposedPort(3306)
             ->asService();
+    }
+
+    // @todo - postgres version? docker image syntax
+    private function postgres(string $version = '5.7'): Service
+    {
+        return dag()->container()
+            ->from("postgres:$version")
+            ->withEnvVariable('MYSQL_ROOT_PASSWORD', 'mysql')
+            ->withExposedPort(3306)
+            ->asService();
+    }
+
+    // @todo - DATABASE_URL decorator function
+
+    private function setUpMySQL(Container $container): Container
+    {
+        return $container->withEnvVariable(
+            'DATABASE_URL', 'mysql://root:mysql@mysql/sylius_%kernel.environment%'
+        );
+    }
+
+    private function setUpPostgres(Container $container): Container
+    {
+        return $container->withEnvVariable(
+            'DATABASE_URL', "pgsql://postgres:postgres@127.0.0.1/sylius?charset=utf8&serverVersion=$version" // @todo - add version
+        );
     }
 
 }
