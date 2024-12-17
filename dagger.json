@@ -1,0 +1,6 @@
+{
+  "name": "dragoonis-sylius",
+  "engineVersion": "v0.14.0",
+  "sdk": "php",
+  "source": ".dagger"
+}

@@ -36,6 +36,8 @@ ci: init phpstan phpunit phpspec behat
 
 integration: init phpunit behat-cli behat-non-js
 
+phpunit-integration: init phpunit
+
 static: install phpspec phpstan
 
 # Example execution: make profile url=http://app
